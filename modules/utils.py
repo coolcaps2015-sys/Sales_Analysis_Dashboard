@@ -261,3 +261,45 @@ def is_valid_gstin_format(gstin: object) -> bool:
         return False
     text = str(gstin).strip().upper()
     return bool(GSTIN_PATTERN.match(text)) and text[:2] in GST_STATE_CODES
+
+
+# ---------------------------------------------------------------------------
+# 3. INDIAN-STYLE CURRENCY FORMATTING
+# ---------------------------------------------------------------------------
+# Non-technical users read "₹2.33 Cr" far faster than "23273263.24" - used
+# on chart labels, KPI cards, and generated insight text.
+
+def format_inr_short(value: Optional[float]) -> str:
+    """23273263.24 -> '₹2.33 Cr'. Handles None/NaN safely."""
+    if value is None:
+        return "₹0"
+    try:
+        value = float(value)
+    except (TypeError, ValueError):
+        return "₹0"
+    if value != value:  # NaN check without importing math/pandas here
+        return "₹0"
+
+    sign = "-" if value < 0 else ""
+    value = abs(value)
+
+    if value >= 1_00_00_000:      # 1 crore
+        return f"{sign}₹{value / 1_00_00_000:.2f} Cr"
+    if value >= 1_00_000:         # 1 lakh
+        return f"{sign}₹{value / 1_00_000:.2f} L"
+    if value >= 1_000:
+        return f"{sign}₹{value / 1_000:.1f}K"
+    return f"{sign}₹{value:.0f}"
+
+
+def format_pct(value: Optional[float], decimals: int = 1) -> str:
+    """Safe percentage formatting for chart/insight text. None/NaN -> 'N/A'."""
+    if value is None:
+        return "N/A"
+    try:
+        value = float(value)
+    except (TypeError, ValueError):
+        return "N/A"
+    if value != value:
+        return "N/A"
+    return f"{value:.{decimals}f}%"
