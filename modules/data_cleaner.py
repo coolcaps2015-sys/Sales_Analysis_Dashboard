@@ -95,6 +95,20 @@ def _looks_like_footer(customer_val: object) -> bool:
     return any(kw in text for kw in ("grand total", "closing balance", "total"))
 
 
+def _drop_blank_key_rows(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Drop rows where BOTH date and customer are blank - these are almost
+    always a trailing grand-total/footer row (no text label, just a lone
+    number) or a genuinely empty spacer row. Real transaction and line-item
+    rows always carry at least a customer/particulars value, so this never
+    removes legitimate data.
+    """
+    if "date" not in df.columns or "customer" not in df.columns:
+        return df
+    blank_mask = df["date"].isna() & df["customer"].isna()
+    return df.loc[~blank_mask].copy()
+
+
 def _rename_to_canonical(df: pd.DataFrame, mapping: dict[str, str]) -> pd.DataFrame:
     """Rename mapped columns to canonical names; leave unmapped columns as-is."""
     return df.rename(columns=mapping)
@@ -154,6 +168,7 @@ def _clean_precleaned(df: pd.DataFrame, mapping: dict[str, str]) -> pd.DataFrame
 
 def _clean_raw(df: pd.DataFrame, mapping: dict[str, str]) -> pd.DataFrame:
     df = _rename_to_canonical(df, mapping)
+    df = _drop_blank_key_rows(df)
 
     # 1. Drop obvious footer/total rows before anything else - they'd
     #    otherwise get treated as a "Transaction" and inflate sales.
@@ -191,8 +206,37 @@ def _clean_raw(df: pd.DataFrame, mapping: dict[str, str]) -> pd.DataFrame:
 
 
 # ---------------------------------------------------------------------------
-# Data quality report
+# Path C: Tally "Day Book" double-entry export (Debit/Credit columns
+# instead of a single Value column - no dedicated GSTIN or Quantity column
+# either, since item-level detail is squeezed into unlabeled columns that
+# shift position depending on row type and aren't reliably recoverable).
 # ---------------------------------------------------------------------------
+
+def _clean_daybook(df: pd.DataFrame, mapping: dict[str, str]) -> pd.DataFrame:
+    df = _rename_to_canonical(df, mapping)
+    df = _drop_blank_key_rows(df)
+
+    # A transaction row is any row carrying a voucher/invoice number - the
+    # customer's total invoice amount sits in Debit on that exact row.
+    # Every other row (tax lines, "Sales Local @X%" lines, item detail,
+    # rounding adjustments) is a Line Item and never counted toward revenue.
+    df["row_type"] = np.where(df["invoice_number"].notna(), "Transaction", "Line Item")
+    df["sales_value"] = np.where(df["row_type"] == "Transaction", df.get("debit"), np.nan)
+
+    # Forward-fill date/customer within each voucher block, same grouping
+    # approach as the raw pipeline.
+    group_id = (df["row_type"] == "Transaction").cumsum()
+    for col in ["date", "customer"]:
+        if col in df.columns:
+            df[col] = df.groupby(group_id)[col].transform(lambda s: s.ffill())
+
+    # This format has no dedicated Voucher Type column populated with real
+    # values (Tally's export shifts item amounts into that column position
+    # instead), so cancelled/FOC detection relies on the Particulars text.
+    df["is_cancelled"] = df["customer"].astype(str).str.contains("cancel", case=False, na=False)
+    df["is_foc"] = df["customer"].astype(str).str.contains("foc|sample", case=False, na=False)
+
+    return _finalize_common(df)
 
 def _build_quality_report(df: pd.DataFrame) -> DataQualityReport:
     txn = df[df["row_type"] == "Transaction"]
@@ -245,8 +289,18 @@ def clean_data(load_result: LoadResult) -> CleanResult:
         )
 
     raw_df = load_result.dataframe.copy()
+    mapped_fields = set(load_result.column_mapping.values())
+    is_daybook_format = "sales_value" not in mapped_fields and "debit" in mapped_fields and "credit" in mapped_fields
 
-    if load_result.likely_precleaned:
+    if is_daybook_format:
+        df = _clean_daybook(raw_df, load_result.column_mapping)
+        warnings.append(
+            "This file uses a Debit/Credit ledger format (Tally Day Book export) rather than a "
+            "single Sales Value column. Sales value was derived from the Debit amount on each "
+            "transaction row. Quantity and GSTIN were not available in this format, so quantity/ASP "
+            "and geographic analysis are unavailable for this file."
+        )
+    elif load_result.likely_precleaned:
         df = _clean_precleaned(raw_df, load_result.column_mapping)
     else:
         df = _clean_raw(raw_df, load_result.column_mapping)

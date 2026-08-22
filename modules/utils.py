@@ -32,7 +32,7 @@ from typing import Optional
 CANONICAL_COLUMNS: dict[str, list[str]] = {
     "date": [
         "date", "voucher date", "invoice date", "sales date", "txn date",
-        "transaction date",
+        "transaction date", "vch date",
     ],
     "customer": [
         "particulars", "customer", "customer name", "party", "party name",
@@ -44,11 +44,12 @@ CANONICAL_COLUMNS: dict[str, list[str]] = {
     ],
     "voucher_type": [
         "voucher type", "vouchertype", "transaction type", "txn type",
-        "type",
+        "type", "vch type",
     ],
     "invoice_number": [
         "voucher no", "voucher no.", "voucher number", "invoice no",
         "invoice no.", "invoice number", "bill no", "bill no.",
+        "vch no", "vch no.", "vch number",
     ],
     "voucher_ref_no": [
         "voucher ref no", "voucher ref. no.", "voucher ref number",
@@ -81,6 +82,12 @@ CANONICAL_COLUMNS: dict[str, list[str]] = {
     ],
     "row_type": [
         "row type", "rowtype", "record type",
+    ],
+    "debit": [
+        "debit", "dr", "debit amount", "debit amt",
+    ],
+    "credit": [
+        "credit", "cr", "credit amount", "credit amt",
     ],
 }
 
@@ -171,13 +178,26 @@ def validate_mapping(mapping: dict[str, str]) -> tuple[bool, list[str]]:
     """
     Check whether a column mapping satisfies the app's minimum requirements.
 
+    A direct `sales_value` column is normally required, but a Tally Day Book
+    style export (double-entry ledger with Debit/Credit columns instead of
+    a single Value column) can substitute for it - data_cleaner.py derives
+    sales_value from Debit on transaction rows in that case.
+
     Returns
     -------
     is_valid       : False if any REQUIRED_FIELDS are missing.
     missing_fields : list of missing required canonical field names.
     """
     found = set(mapping.values())
-    missing = sorted(REQUIRED_FIELDS - found)
+    has_direct_value = "sales_value" in found
+    has_debit_credit_pair = "debit" in found and "credit" in found
+
+    missing = []
+    if "date" not in found:
+        missing.append("date")
+    if not has_direct_value and not has_debit_credit_pair:
+        missing.append("sales_value")
+
     return (len(missing) == 0), missing
 
 
