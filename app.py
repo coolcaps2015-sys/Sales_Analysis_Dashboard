@@ -3,58 +3,50 @@ app.py
 ------
 Entry point for the Sales Analytics Dashboard.
 
-This build establishes the app shell: page config, light/dark theme toggle,
-the dual-logo header, and Page 0 (upload -> validate -> data quality report)
-wired to the real data_loader / data_cleaner pipeline. The five analysis
-pages (Executive Overview, Customer Analysis, Geographic Analysis, Sales &
-Operations, Data Explorer) get added on top of this shell next.
+Single fixed dark theme (no toggle - removed after feedback that the
+runtime light/dark CSS-swap wasn't rendering smoothly on Streamlit's
+native widgets). Header is text-only (company names, no logo images).
+
+All five pages are wired to the real, tested modules:
+  Page 0: Upload -> validate -> data quality report
+  Page 1: Executive Overview
+  Page 2: Customer Analysis
+  Page 3: Geographic Analysis
+  Page 4: Sales & Operations
+  Page 5: Data Explorer
 """
 
 from __future__ import annotations
 
+import io
 from pathlib import Path
 
-import streamlit as st
 import pandas as pd
+import streamlit as st
 
 from modules.data_loader import load_sales_data
 from modules.data_cleaner import clean_data
+from modules import calculations as calc
+from modules import customer_analysis as ca
+from modules import geographic_analysis as geo
+from modules import charts
+from modules.utils import format_inr_short, format_pct
 
-
-# Resolve asset paths relative to THIS FILE, not the current working
-# directory - st.image()/page_icon paths are read relative to wherever
-# `streamlit run` was launched from, which breaks if you run it from an
-# IDE or a different folder. Anchoring to __file__ makes it launch-location-proof.
 BASE_DIR = Path(__file__).resolve().parent
-ASSETS_DIR = BASE_DIR / "assets"
-COOLCAPS_LOGO = ASSETS_DIR / "coolcaps_logo.png"
-PURV_LOGO = ASSETS_DIR / "purv_group_logo.png"
 
 st.set_page_config(
     page_title="Sales Performance Dashboard",
-    page_icon=str(COOLCAPS_LOGO) if COOLCAPS_LOGO.exists() else "📊",
+    page_icon="📊",
     layout="wide",
     initial_sidebar_state="expanded",
 )
 
 
 # ---------------------------------------------------------------------------
-# Theme handling
+# Fixed dark theme
 # ---------------------------------------------------------------------------
-# Streamlit's built-in theme is fixed at server start via config.toml, so a
-# true runtime toggle is done with a CSS override injected on every rerun.
-# session_state holds the current choice so it persists across interactions.
 
-LIGHT_THEME = {
-    "bg": "#FFFFFF",
-    "card_bg": "#F7F8FA",
-    "text": "#1A1A2E",
-    "subtext": "#5A5A72",
-    "border": "#E4E6EB",
-    "accent": "#6C63FF",
-}
-
-DARK_THEME = {
+THEME = {
     "bg": "#0E1117",
     "card_bg": "#1A1D27",
     "text": "#F5F5F7",
@@ -63,125 +55,114 @@ DARK_THEME = {
     "accent": "#8B85FF",
 }
 
-if "theme_mode" not in st.session_state:
-    st.session_state.theme_mode = "Light"
-
-
-def inject_theme_css(mode: str) -> None:
-    colors = LIGHT_THEME if mode == "Light" else DARK_THEME
-    st.markdown(
-        f"""
-        <style>
-        .stApp {{
-            background-color: {colors['bg']};
-            color: {colors['text']};
-        }}
-        section[data-testid="stSidebar"] {{
-            background-color: {colors['card_bg']};
-            border-right: 1px solid {colors['border']};
-        }}
-        .kpi-card {{
-            background-color: {colors['card_bg']};
-            border: 1px solid {colors['border']};
-            border-radius: 12px;
-            padding: 18px 20px;
-            text-align: left;
-        }}
-        .kpi-label {{
-            color: {colors['subtext']};
-            font-size: 0.85rem;
-            font-weight: 500;
-            text-transform: uppercase;
-            letter-spacing: 0.03em;
-        }}
-        .kpi-value {{
-            color: {colors['text']};
-            font-size: 1.6rem;
-            font-weight: 700;
-            margin-top: 4px;
-        }}
-        .app-header {{
-            display: flex;
-            align-items: center;
-            justify-content: space-between;
-            padding: 10px 0 18px 0;
-            border-bottom: 1px solid {colors['border']};
-            margin-bottom: 20px;
-        }}
-        .app-title {{
-            color: {colors['text']};
-            font-size: 1.4rem;
-            font-weight: 700;
-            margin: 0;
-        }}
-        .app-subtitle {{
-            color: {colors['subtext']};
-            font-size: 0.9rem;
-            margin: 0;
-        }}
-        .insight-box {{
-            background-color: {colors['card_bg']};
-            border-left: 4px solid {colors['accent']};
-            border-radius: 6px;
-            padding: 12px 16px;
-            margin: 6px 0;
-            color: {colors['text']};
-        }}
-        </style>
-        """,
-        unsafe_allow_html=True,
-    )
-
-
-inject_theme_css(st.session_state.theme_mode)
+st.markdown(
+    f"""
+    <style>
+    .stApp {{
+        background-color: {THEME['bg']};
+        color: {THEME['text']};
+    }}
+    section[data-testid="stSidebar"] {{
+        background-color: {THEME['card_bg']};
+        border-right: 1px solid {THEME['border']};
+    }}
+    .kpi-card {{
+        background-color: {THEME['card_bg']};
+        border: 1px solid {THEME['border']};
+        border-radius: 12px;
+        padding: 18px 20px;
+        text-align: left;
+    }}
+    .kpi-label {{
+        color: {THEME['subtext']};
+        font-size: 0.85rem;
+        font-weight: 500;
+        text-transform: uppercase;
+        letter-spacing: 0.03em;
+    }}
+    .kpi-value {{
+        color: {THEME['text']};
+        font-size: 1.6rem;
+        font-weight: 700;
+        margin-top: 4px;
+    }}
+    .app-title {{
+        color: {THEME['text']};
+        font-size: 1.5rem;
+        font-weight: 700;
+        margin: 0;
+    }}
+    .app-subtitle {{
+        color: {THEME['subtext']};
+        font-size: 0.9rem;
+        margin: 2px 0 0 0;
+    }}
+    .insight-box {{
+        background-color: {THEME['card_bg']};
+        border-left: 4px solid {THEME['accent']};
+        border-radius: 6px;
+        padding: 12px 16px;
+        margin: 6px 0;
+        color: {THEME['text']};
+    }}
+    .warning-box {{
+        background-color: {THEME['card_bg']};
+        border-left: 4px solid #FF6B6B;
+        border-radius: 6px;
+        padding: 12px 16px;
+        margin: 6px 0;
+        color: {THEME['text']};
+    }}
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
 
 
 # ---------------------------------------------------------------------------
-# Header: both logos + title, theme toggle in the sidebar
+# Header: text-only, both company names, no logo images
 # ---------------------------------------------------------------------------
 
-header_left, header_right = st.columns([4, 1])
-
-with header_left:
-    logo_col1, logo_col2, title_col = st.columns([1, 1, 4])
-    with logo_col1:
-        if COOLCAPS_LOGO.exists():
-            st.image(str(COOLCAPS_LOGO), width=120)
-        else:
-            st.markdown("**Cool Caps Industries**")
-    with logo_col2:
-        if PURV_LOGO.exists():
-            st.image(str(PURV_LOGO), width=120)
-        else:
-            st.markdown("**PURV Group**")
-    with title_col:
-        st.markdown(
-            """
-            <div>
-                <p class="app-title">Sales Performance Dashboard</p>
-                <p class="app-subtitle">Dynamic analysis generated from uploaded sales data</p>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
-
-with st.sidebar:
-    st.markdown("### Settings")
-    st.session_state.theme_mode = st.radio(
-        "Appearance", ["Light", "Dark"],
-        index=0 if st.session_state.theme_mode == "Light" else 1,
-        horizontal=True,
-    )
-    st.divider()
+st.markdown(
+    """
+    <div style="padding: 10px 0 18px 0; border-bottom: 1px solid #2A2D3A; margin-bottom: 20px;">
+        <p class="app-title">Cool Caps Industries &nbsp;·&nbsp; PURV Group</p>
+        <p class="app-subtitle">Sales Performance Dashboard — dynamic analysis generated from uploaded sales data</p>
+    </div>
+    """,
+    unsafe_allow_html=True,
+)
 
 
 # ---------------------------------------------------------------------------
-# Cached loading + cleaning (re-runs only when the uploaded file changes)
+# Small shared helpers
+# ---------------------------------------------------------------------------
+
+def kpi_card(label: str, value: str) -> str:
+    return f'<div class="kpi-card"><div class="kpi-label">{label}</div><div class="kpi-value">{value}</div></div>'
+
+
+def insight_line(text: str) -> None:
+    st.markdown(f'<div class="insight-box">{text}</div>', unsafe_allow_html=True)
+
+
+def warning_line(text: str) -> None:
+    st.markdown(f'<div class="warning-box">⚠️ {text}</div>', unsafe_allow_html=True)
+
+
+def kpi_row(items: list[tuple[str, str]]) -> None:
+    """items = [(label, value), ...] - renders as evenly-spaced KPI cards."""
+    cols = st.columns(len(items))
+    for col, (label, value) in zip(cols, items):
+        col.markdown(kpi_card(label, value), unsafe_allow_html=True)
+
+
+# ---------------------------------------------------------------------------
+# Cached loading + cleaning
 # ---------------------------------------------------------------------------
 
 @st.cache_data(show_spinner="Reading Excel file...")
 def cached_load_and_clean(file_bytes: bytes, file_name: str):
-    import io
     load_result = load_sales_data(io.BytesIO(file_bytes))
     clean_result = clean_data(load_result)
     return load_result, clean_result
@@ -251,7 +232,7 @@ if not st.session_state.proceed:
 
 
 # ---------------------------------------------------------------------------
-# Sidebar: page navigation + global date filter
+# Sidebar: page navigation + global filters
 # ---------------------------------------------------------------------------
 
 full_df = clean_result.dataframe
@@ -262,10 +243,10 @@ with st.sidebar:
         "Navigate",
         [
             "Executive Overview",
-            "Customer Analysis (coming soon)",
-            "Geographic Analysis (coming soon)",
-            "Sales & Operations (coming soon)",
-            "Data Explorer (coming soon)",
+            "Customer Analysis",
+            "Geographic Analysis",
+            "Sales & Operations",
+            "Data Explorer",
         ],
         label_visibility="collapsed",
     )
@@ -279,68 +260,69 @@ with st.sidebar:
         "Date range", value=(min_date, max_date), min_value=min_date, max_value=max_date
     )
 
+    customer_options = sorted(full_df["customer"].dropna().unique().tolist()) if "customer" in full_df.columns else []
+    selected_customers = st.multiselect("Customer", customer_options, default=[])
+
+    voucher_options = sorted(full_df["voucher_type"].dropna().unique().tolist()) if "voucher_type" in full_df.columns else []
+    selected_vouchers = st.multiselect("Voucher Type", voucher_options, default=[])
+
+    sale_type = st.radio("Sale Type", ["All", "Normal Sale Only", "FOC Only"], index=0)
+
     if st.button("Reset Filters"):
+        for key in ["proceed"]:
+            pass  # keep proceed state; just rerun to clear widget defaults
         st.rerun()
 
-# Apply the global date filter once, upstream of every page.
+# --- Apply global filters once, upstream of every page ---------------------
+df = full_df
+
 if isinstance(date_range, tuple) and len(date_range) == 2:
     start_date, end_date = date_range
-    mask = full_df["date"].between(pd.Timestamp(start_date), pd.Timestamp(end_date)) | full_df["date"].isna()
-    df = full_df[mask]
-else:
-    df = full_df
+    date_mask = df["date"].between(pd.Timestamp(start_date), pd.Timestamp(end_date)) | df["date"].isna()
+    df = df[date_mask]
 
-theme = LIGHT_THEME if st.session_state.theme_mode == "Light" else DARK_THEME
+if selected_customers:
+    df = df[df["customer"].isin(selected_customers) | df["row_type"].ne("Transaction")]
 
+if selected_vouchers:
+    df = df[df["voucher_type"].isin(selected_vouchers) | df["row_type"].ne("Transaction")]
 
-# ---------------------------------------------------------------------------
-# KPI card helper
-# ---------------------------------------------------------------------------
+if sale_type == "Normal Sale Only":
+    df = df[~df["is_foc"].fillna(False)]
+elif sale_type == "FOC Only":
+    df = df[df["is_foc"].fillna(False)]
 
-def kpi_card(label: str, value: str) -> str:
-    return f'<div class="kpi-card"><div class="kpi-label">{label}</div><div class="kpi-value">{value}</div></div>'
-
-
-def insight_line(text: str) -> None:
-    st.markdown(f'<div class="insight-box">{text}</div>', unsafe_allow_html=True)
+theme = THEME
 
 
 # ---------------------------------------------------------------------------
 # Page 1: Executive Overview
 # ---------------------------------------------------------------------------
 
-if page == "Executive Overview":
-    from modules import calculations as calc, customer_analysis as ca, geographic_analysis as geo, charts
-    from modules.utils import format_inr_short, format_pct
-
-    st.markdown("## Sales Performance Dashboard")
+def render_executive_overview(df: pd.DataFrame) -> None:
+    st.markdown("## Executive Overview")
     fy_list = clean_result.quality.financial_years
-    fy_caption = fy_list[0] if len(fy_list) == 1 else (
-        f"{fy_list[0]} to {fy_list[-1]}" if fy_list else "period"
-    )
+    fy_caption = fy_list[0] if len(fy_list) == 1 else (f"{fy_list[0]} to {fy_list[-1]}" if fy_list else "period")
     st.caption(f"Dynamic analysis generated from uploaded sales data — {fy_caption}")
 
-    # --- KPI cards ---------------------------------------------------------
     k = calc.compute_headline_kpis(df)
-    kpi_cols = st.columns(4 if not k.quantity_available else 6)
-    kpi_cols[0].markdown(kpi_card("Total Sales", format_inr_short(k.total_sales)), unsafe_allow_html=True)
-    kpi_cols[1].markdown(kpi_card("Total Invoices", f"{k.total_invoices:,}"), unsafe_allow_html=True)
-    kpi_cols[2].markdown(kpi_card("Total Customers", f"{k.total_customers:,}"), unsafe_allow_html=True)
-    kpi_cols[3].markdown(kpi_card("Avg Invoice Value", format_inr_short(k.avg_invoice_value)), unsafe_allow_html=True)
+    items = [
+        ("Total Sales", format_inr_short(k.total_sales)),
+        ("Total Invoices", f"{k.total_invoices:,}"),
+        ("Total Customers", f"{k.total_customers:,}"),
+        ("Avg Invoice Value", format_inr_short(k.avg_invoice_value)),
+    ]
     if k.quantity_available:
-        kpi_cols[4].markdown(kpi_card("Total Quantity", f"{k.total_quantity:,.0f}"), unsafe_allow_html=True)
-        kpi_cols[5].markdown(kpi_card("Avg Selling Rate", f"₹{k.avg_selling_rate:.2f}"), unsafe_allow_html=True)
+        items.append(("Total Quantity", f"{k.total_quantity:,.0f}"))
+        items.append(("Avg Selling Rate", f"₹{k.avg_selling_rate:.2f}"))
+    kpi_row(items)
 
     st.write("")
-
-    # --- Monthly sales analysis ---------------------------------------------
     st.markdown("### Monthly Sales Analysis")
-    metric_choice = st.radio(
-        "Metric", ["Sales", "Invoices", "Customers"], horizontal=True, label_visibility="collapsed"
-    )
+    metric_options = ["Sales", "Invoices", "Customers"] + (["Quantity"] if k.quantity_available else [])
+    metric_choice = st.radio("Metric", metric_options, horizontal=True, label_visibility="collapsed", key="eo_metric")
     monthly = calc.monthly_summary(df)
-    fig = charts.monthly_trend_chart(monthly, metric_choice.lower(), theme)
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(charts.monthly_trend_chart(monthly, metric_choice.lower(), theme), use_container_width=True)
 
     hl = calc.monthly_highlights(monthly)
     if hl.highest_month:
@@ -354,62 +336,310 @@ if page == "Executive Overview":
         )
 
     st.write("")
-
-    # --- H1 vs H2 ------------------------------------------------------------
     st.markdown("### First Half vs Second Half")
     h1h2 = calc.h1_h2_comparison(df)
     if h1h2.both_halves_present:
-        fig = charts.h1_h2_chart(h1h2.h1_sales, h1h2.h2_sales, theme)
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(charts.h1_h2_chart(h1h2.h1_sales, h1h2.h2_sales, theme), use_container_width=True)
         direction = "grew" if (h1h2.h2_growth_pct or 0) >= 0 else "declined"
         insight_line(
-            f"🔄 Second-half sales {direction} by {format_pct(abs(h1h2.h2_growth_pct) if h1h2.h2_growth_pct else None)} "
-            f"compared to the first half."
+            f"🔄 Second-half sales {direction} by "
+            f"{format_pct(abs(h1h2.h2_growth_pct) if h1h2.h2_growth_pct else None)} compared to the first half."
         )
     else:
         st.info("Not enough date coverage yet to compare first-half vs second-half sales.")
 
     st.write("")
-
-    # --- Top customers ---------------------------------------------------
     st.markdown("### Top Customers")
-    top_n = st.select_slider("Show top", options=[5, 10, 20, 50], value=10)
+    top_n = st.select_slider("Show top", options=[5, 10, 20, 50], value=10, key="eo_topn")
     top_cust = ca.top_customers(df, top_n)
-    fig = charts.top_customers_chart(top_cust, theme)
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(charts.top_customers_chart(top_cust, theme), use_container_width=True)
     if not top_cust.empty:
-        insight_line(
-            f"🏆 Your top {top_n} customers contribute {format_pct(top_cust['sales_pct'].sum())} of total sales."
-        )
+        insight_line(f"🏆 Your top {top_n} customers contribute {format_pct(top_cust['sales_pct'].sum())} of total sales.")
 
     st.write("")
-
-    # --- Customer concentration (Pareto) --------------------------------
     st.markdown("### Customer Concentration")
     pareto = ca.pareto_analysis(df)
-    fig = charts.pareto_chart(pareto.table, theme=theme)
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(charts.pareto_chart(pareto.table, theme=theme), use_container_width=True)
     if not pareto.table.empty:
+        concentration_note = (
+            "Revenue is fairly concentrated — worth strengthening key-account retention."
+            if pareto.top10_contribution_pct > 50 else "Revenue is reasonably spread across your customer base."
+        )
         insight_line(
             f"⚖️ Top 10 customers = {format_pct(pareto.top10_contribution_pct)} of revenue, "
-            f"top 20 = {format_pct(pareto.top20_contribution_pct)}. "
-            f"{'Revenue is fairly concentrated — worth strengthening key-account retention.' if pareto.top10_contribution_pct > 50 else 'Revenue is reasonably spread across your customer base.'}"
+            f"top 20 = {format_pct(pareto.top20_contribution_pct)}. {concentration_note}"
         )
 
     st.write("")
-
-    # --- Geographic snapshot ----------------------------------------------
     st.markdown("### Geographic Sales Snapshot")
     if geo.geographic_data_available(df):
         states = geo.sales_by_state(df)
-        fig = charts.state_sales_chart(states, top_n=10, theme=theme)
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(charts.state_sales_chart(states, top_n=10, theme=theme), use_container_width=True)
         top_state = states.iloc[0]
-        insight_line(
-            f"📍 <b>{top_state['state']}</b> is your largest market at {format_pct(top_state['sales_pct'])} of total sales."
-        )
+        insight_line(f"📍 <b>{top_state['state']}</b> is your largest market at {format_pct(top_state['sales_pct'])} of total sales.")
     else:
         st.info("Geographic analysis unavailable because GSTIN data was not detected in this file.")
 
-else:
-    st.info("This page is coming in the next build step — stay tuned.")
+
+# ---------------------------------------------------------------------------
+# Page 2: Customer Analysis
+# ---------------------------------------------------------------------------
+
+def render_customer_analysis(df: pd.DataFrame) -> None:
+    st.markdown("## Customer Analysis")
+    st.caption("Segmentation, retention, and purchase-frequency intelligence.")
+
+    ck = ca.customer_kpis(df)
+    kpi_row([
+        ("Total Customers", f"{ck.total_customers:,}"),
+        ("New Customers", f"{ck.new_customers:,}"),
+        ("Retained (H1→H2)", f"{ck.retained_customers:,}"),
+        ("Inactive / Lost", f"{ck.inactive_customers:,}"),
+        ("Top Customer", ck.top_customer if len(ck.top_customer) < 22 else ck.top_customer[:20] + "…"),
+        ("Avg Customer Sales", format_inr_short(ck.avg_customer_sales)),
+    ])
+
+    st.write("")
+    st.markdown("### Customer Segments")
+    st.caption(
+        "VIP = top 10% by sales · High Value = big spend, low frequency · Regular = frequent, consistent buyers · "
+        "New = first purchase in the most recent half · At Risk / Inactive = active before, quiet since."
+    )
+    segmented = ca.segment_customers(df)
+    if not segmented.empty:
+        seg_counts = segmented["segment"].value_counts()
+        st.plotly_chart(charts.segmentation_chart(seg_counts, theme), use_container_width=True)
+        vip_sales_pct = (
+            segmented.loc[segmented["segment"] == "VIP", "total_sales"].sum() / segmented["total_sales"].sum() * 100
+            if segmented["total_sales"].sum() else 0
+        )
+        insight_line(
+            f"👑 {int(seg_counts.get('VIP', 0))} VIP customers drive {format_pct(vip_sales_pct)} of total revenue. "
+            f"{int(seg_counts.get('Inactive/Lost', 0))} customers are inactive/lost and may be worth re-engaging."
+        )
+    else:
+        st.info("Not enough customer data to build segments.")
+
+    st.write("")
+    st.markdown("### Retention: H1 vs H2")
+    retention = ca.h1_h2_retention(df)
+    if not retention.table.empty:
+        st.plotly_chart(
+            charts.category_count_chart(retention.table, "category", "customer_count", "Customer Retention: H1 vs H2", theme=theme),
+            use_container_width=True,
+        )
+        insight_line(
+            f"🔁 {format_pct(retention.retention_rate_pct)} of H1 customers came back and purchased again in H2 "
+            f"({retention.both_periods} of {retention.both_periods + retention.h1_only} H1 customers)."
+        )
+    else:
+        st.info("Not enough date coverage yet to compare H1 vs H2 retention.")
+
+    st.write("")
+    st.markdown("### Purchase Frequency")
+    freq = ca.frequency_distribution(df)
+    if not freq.empty:
+        st.plotly_chart(charts.frequency_distribution_chart(freq, theme), use_container_width=True)
+        one_timers = int(freq.loc[freq["bucket"] == "1 invoice", "customer_count"].sum())
+        insight_line(f"🧾 {one_timers} customers have purchased only once — a natural list to prioritize for follow-up.")
+
+
+# ---------------------------------------------------------------------------
+# Page 3: Geographic Analysis
+# ---------------------------------------------------------------------------
+
+def render_geographic_analysis(df: pd.DataFrame) -> None:
+    st.markdown("## Geographic Analysis")
+    st.caption("State-level performance, derived from customer GSTIN.")
+
+    if not geo.geographic_data_available(df):
+        st.info("Geographic analysis unavailable because GSTIN data was not detected in this file.")
+        return
+
+    states = geo.sales_by_state(df)
+    st.markdown("### Sales by State")
+    st.plotly_chart(charts.state_sales_chart(states, top_n=len(states), theme=theme), use_container_width=True)
+    with st.expander("Full state table"):
+        display_df = states.copy()
+        display_df["sales"] = display_df["sales"].apply(format_inr_short)
+        display_df["sales_pct"] = display_df["sales_pct"].apply(lambda v: format_pct(v))
+        display_df["avg_invoice_value"] = display_df["avg_invoice_value"].apply(format_inr_short)
+        st.dataframe(display_df, hide_index=True, use_container_width=True)
+
+    top_state = states.iloc[0]
+    insight_line(
+        f"📍 <b>{top_state['state']}</b> leads at {format_pct(top_state['sales_pct'])} of sales, "
+        f"across {int(top_state['customers'])} customers and {int(top_state['invoices'])} invoices."
+    )
+
+    st.write("")
+    st.markdown("### State Drill-Down")
+    all_states = geo.available_states(df)
+    selected_state = st.selectbox("Select a state", all_states, index=0)
+    dd = geo.state_drilldown(df, selected_state)
+
+    kpi_row([
+        ("Total Sales", format_inr_short(dd.total_sales)),
+        ("Customers", f"{dd.customer_count:,}"),
+        ("Invoices", f"{dd.invoice_count:,}"),
+        ("Avg Invoice Value", format_inr_short(dd.avg_invoice_value)),
+    ])
+
+    st.write("")
+    col1, col2 = st.columns(2)
+    with col1:
+        if not dd.monthly_trend.empty:
+            st.plotly_chart(charts.monthly_trend_chart(dd.monthly_trend, "sales", theme), use_container_width=True)
+    with col2:
+        if not dd.top_customers.empty:
+            st.plotly_chart(charts.top_customers_chart(dd.top_customers, theme), use_container_width=True)
+
+
+# ---------------------------------------------------------------------------
+# Page 4: Sales & Operations
+# ---------------------------------------------------------------------------
+
+def render_sales_operations(df: pd.DataFrame) -> None:
+    st.markdown("## Sales & Operations")
+    st.caption("Quantity, pricing, invoice distribution, cancellations, and FOC activity.")
+
+    k = calc.compute_headline_kpis(df)
+
+    if k.quantity_available:
+        st.markdown("### Quantity vs Sales")
+        st.caption("Compare monthly quantity against monthly sales to see whether growth is volume-driven or price-driven.")
+        monthly = calc.monthly_summary(df)
+        col1, col2 = st.columns(2)
+        with col1:
+            st.plotly_chart(charts.monthly_trend_chart(monthly, "sales", theme), use_container_width=True)
+        with col2:
+            st.plotly_chart(charts.monthly_trend_chart(monthly, "quantity", theme), use_container_width=True)
+
+        st.write("")
+        st.markdown("### Average Selling Rate Trend")
+        asr = calc.asr_by_month(df)
+        st.plotly_chart(charts.asr_trend_chart(asr, theme), use_container_width=True)
+        if len(asr) >= 2:
+            change = (asr["asr"].iloc[-1] - asr["asr"].iloc[0]) / asr["asr"].iloc[0] * 100 if asr["asr"].iloc[0] else None
+            if change is not None:
+                direction = "risen" if change >= 0 else "fallen"
+                insight_line(f"💹 Average selling rate has {direction} {format_pct(abs(change))} from {asr['month_label'].iloc[0]} to {asr['month_label'].iloc[-1]}.")
+    else:
+        st.info("Quantity data was not detected in this file — quantity and ASR analysis are unavailable.")
+
+    st.write("")
+    st.markdown("### Invoice Value Distribution")
+    ivs = calc.invoice_value_stats(df)
+    kpi_row([
+        ("Average Invoice", format_inr_short(ivs.average)),
+        ("Median Invoice", format_inr_short(ivs.median)),
+        ("Largest Invoice", format_inr_short(ivs.maximum)),
+        ("Smallest Invoice", format_inr_short(ivs.minimum)),
+    ])
+    if not ivs.bucket_counts.empty:
+        st.plotly_chart(charts.invoice_value_bucket_chart(ivs.bucket_counts, theme), use_container_width=True)
+
+    st.write("")
+    st.markdown("### Cancellation Analysis")
+    cs = calc.cancellation_stats(df)
+    kpi_row([
+        ("Cancelled Invoices", f"{cs.cancelled_count:,}"),
+        ("Cancellation Rate", format_pct(cs.cancellation_rate_pct)),
+        ("Cancelled Value", format_inr_short(cs.cancelled_value)),
+    ])
+    if cs.high_cancellation_warning:
+        warning_line(f"Cancellation rate ({format_pct(cs.cancellation_rate_pct)}) is unusually high — worth investigating root causes.")
+
+    cancelled_df = df[(df["row_type"] == "Transaction") & (df["is_cancelled"].fillna(False))]
+    if not cancelled_df.empty:
+        col1, col2 = st.columns(2)
+        with col1:
+            by_month = (
+                cancelled_df.assign(month_start=cancelled_df["date"].dt.to_period("M").dt.to_timestamp())
+                .groupby("month_start").size().reset_index(name="count").sort_values("month_start")
+            )
+            by_month["month_label"] = by_month["month_start"].dt.strftime("%b %Y")
+            st.plotly_chart(
+                charts.category_count_chart(by_month, "month_label", "count", "Cancellations by Month", theme=theme),
+                use_container_width=True,
+            )
+        with col2:
+            by_customer = (
+                cancelled_df.groupby("customer").size().reset_index(name="count")
+                .sort_values("count", ascending=False).head(10)
+            )
+            st.plotly_chart(
+                charts.category_count_chart(by_customer, "customer", "count", "Top Customers by Cancellations", theme=theme),
+                use_container_width=True,
+            )
+
+    st.write("")
+    st.markdown("### FOC / Sample Analysis")
+    fs = calc.foc_stats(df)
+    foc_items = [("FOC Invoices", f"{fs.foc_count:,}"), ("FOC Customers", f"{fs.foc_customers:,}")]
+    if fs.foc_quantity is not None:
+        foc_items.append(("FOC Quantity", f"{fs.foc_quantity:,.0f}"))
+    kpi_row(foc_items)
+
+    foc_df = df[(df["row_type"] == "Transaction") & (df["is_foc"].fillna(False))]
+    if not foc_df.empty:
+        by_month = (
+            foc_df.assign(month_start=foc_df["date"].dt.to_period("M").dt.to_timestamp())
+            .groupby("month_start").size().reset_index(name="count").sort_values("month_start")
+        )
+        by_month["month_label"] = by_month["month_start"].dt.strftime("%b %Y")
+        st.plotly_chart(
+            charts.category_count_chart(by_month, "month_label", "count", "FOC Invoices by Month", theme=theme),
+            use_container_width=True,
+        )
+
+
+# ---------------------------------------------------------------------------
+# Page 5: Data Explorer
+# ---------------------------------------------------------------------------
+
+def render_data_explorer(df: pd.DataFrame) -> None:
+    st.markdown("## Data Explorer")
+    st.caption("Search, filter, and download the cleaned transaction data.")
+
+    search_text = st.text_input("Search customer name", "")
+    row_type_options = sorted(df["row_type"].dropna().unique().tolist())
+    selected_row_types = st.multiselect("Row Type", row_type_options, default=row_type_options)
+
+    explorer_df = df[df["row_type"].isin(selected_row_types)] if selected_row_types else df
+    if search_text:
+        explorer_df = explorer_df[explorer_df["customer"].astype(str).str.contains(search_text, case=False, na=False)]
+
+    st.write(f"Showing {len(explorer_df):,} of {len(df):,} rows.")
+    st.dataframe(explorer_df, use_container_width=True, height=420)
+
+    st.write("")
+    col1, col2 = st.columns(2)
+    with col1:
+        csv_bytes = explorer_df.to_csv(index=False).encode("utf-8")
+        st.download_button("Download filtered data (CSV)", csv_bytes, "filtered_sales_data.csv", "text/csv")
+    with col2:
+        excel_buffer = io.BytesIO()
+        with pd.ExcelWriter(excel_buffer, engine="openpyxl") as writer:
+            explorer_df.to_excel(writer, index=False, sheet_name="Filtered Data")
+        st.download_button(
+            "Download filtered data (Excel)",
+            excel_buffer.getvalue(),
+            "filtered_sales_data.xlsx",
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
+
+
+# ---------------------------------------------------------------------------
+# Page dispatch
+# ---------------------------------------------------------------------------
+
+PAGES = {
+    "Executive Overview": render_executive_overview,
+    "Customer Analysis": render_customer_analysis,
+    "Geographic Analysis": render_geographic_analysis,
+    "Sales & Operations": render_sales_operations,
+    "Data Explorer": render_data_explorer,
+}
+
+PAGES[page](df)

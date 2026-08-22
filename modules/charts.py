@@ -76,7 +76,7 @@ def monthly_trend_chart(
     individual months at a glance.
     """
     theme = theme or _DEFAULT_THEME
-    labels = {"sales": "Sales", "invoices": "Invoices", "customers": "Customers"}
+    labels = {"sales": "Sales", "invoices": "Invoices", "customers": "Customers", "quantity": "Quantity"}
     metric_label = labels.get(metric, metric.title())
 
     if monthly_df.empty:
@@ -85,7 +85,7 @@ def monthly_trend_chart(
     if metric == "sales":
         text = [format_inr_short(v) for v in monthly_df[metric]]
     else:
-        text = [f"{int(v):,}" for v in monthly_df[metric]]
+        text = [f"{v:,.0f}" for v in monthly_df[metric]]
 
     fig = go.Figure(
         go.Bar(
@@ -315,3 +315,38 @@ def segmentation_chart(segment_counts: pd.Series, theme: Optional[dict] = None) 
     )
     fig.update_yaxes(showgrid=False)
     return _apply_common_layout(fig, theme, "Customer Segments", height=340)
+
+
+# ---------------------------------------------------------------------------
+# Generic category-count bar chart (retention buckets, cancellation-by-month,
+# or any other "label -> count" breakdown that doesn't need its own function)
+# ---------------------------------------------------------------------------
+
+def category_count_chart(
+    df: pd.DataFrame,
+    category_col: str,
+    value_col: str,
+    title: str,
+    value_is_currency: bool = False,
+    theme: Optional[dict] = None,
+) -> go.Figure:
+    theme = theme or _DEFAULT_THEME
+    if df.empty:
+        return _apply_common_layout(go.Figure(), theme, title)
+
+    text = (
+        [format_inr_short(v) for v in df[value_col]]
+        if value_is_currency
+        else [f"{v:,.0f}" for v in df[value_col]]
+    )
+    fig = go.Figure(
+        go.Bar(
+            x=df[category_col],
+            y=df[value_col],
+            marker_color=theme["accent"],
+            text=text,
+            textposition="outside",
+            hovertemplate="%{x}<br>%{text}<extra></extra>",
+        )
+    )
+    return _apply_common_layout(fig, theme, title, height=360)

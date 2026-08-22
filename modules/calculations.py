@@ -90,20 +90,28 @@ def monthly_summary(df: pd.DataFrame) -> pd.DataFrame:
 
     valid["month_start"] = valid["date"].dt.to_period("M").dt.to_timestamp()
 
+    agg_dict = {
+        "sales": ("sales_value", "sum"),
+        "invoices": ("invoice_number", "nunique"),
+        "customers": ("customer", "nunique"),
+    }
+    quantity_available = "quantity" in valid.columns and valid["quantity"].notna().any()
+    if quantity_available:
+        agg_dict["quantity"] = ("quantity", "sum")
+
     grouped = (
         valid.groupby("month_start")
-        .agg(
-            sales=("sales_value", "sum"),
-            invoices=("invoice_number", "nunique"),
-            customers=("customer", "nunique"),
-        )
+        .agg(**agg_dict)
         .reset_index()
         .sort_values("month_start")
     )
     grouped["month_label"] = grouped["month_start"].dt.strftime("%b %Y")
     grouped["mom_growth_pct"] = grouped["sales"].pct_change() * 100
 
-    return grouped[["month_label", "month_start", "sales", "invoices", "customers", "mom_growth_pct"]]
+    cols = ["month_label", "month_start", "sales", "invoices", "customers", "mom_growth_pct"]
+    if quantity_available:
+        cols.insert(-1, "quantity")
+    return grouped[cols]
 
 
 @dataclass
