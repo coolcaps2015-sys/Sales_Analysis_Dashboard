@@ -4,3 +4,8 @@ numpy>=1.26.0
 plotly>=5.20.0
 openpyxl>=3.1.0
 python-dateutil>=2.9.0
+
+
+
+
+# Runing command "Streamlit run app.py"
