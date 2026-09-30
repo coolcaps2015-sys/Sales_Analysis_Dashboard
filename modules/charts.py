@@ -20,6 +20,10 @@ audience): every chart favors clarity over density.
 
 from __future__ import annotations
 
+import json
+import re
+from functools import lru_cache
+from pathlib import Path
 from typing import Optional
 
 import pandas as pd
@@ -221,6 +225,101 @@ def state_sales_chart(sales_by_state_df: pd.DataFrame, top_n: int = 15, theme: O
     fig.update_yaxes(showgrid=False)
     height = max(340, 32 * len(df))
     return _apply_common_layout(fig, theme, "Sales by State", height=height)
+
+
+_INDIA_STATE_GEOJSON = Path(__file__).resolve().parent.parent / "assets" / "india_states.geojson"
+_STATE_MAP_ALIASES = {
+    "andhra pradesh old": "Andhra Pradesh",
+    "arunachal pradesh": "Arunanchal Pradesh",
+    "andaman nicobar islands": "Andaman & Nicobar Island",
+    "dadra nagar haveli and daman diu": "Dadra & Nagar Havelli and Daman & Diu",
+    "daman diu": "Dadra & Nagar Havelli and Daman & Diu",
+    "dadra nagar haveli": "Dadra & Nagar Havelli and Daman & Diu",
+}
+
+
+@lru_cache(maxsize=1)
+def _load_india_state_geojson() -> dict:
+    with _INDIA_STATE_GEOJSON.open(encoding="utf-8") as geojson_file:
+        return json.load(geojson_file)
+
+
+def _india_map_state_name(value: object) -> str | None:
+    normalized = re.sub(r"[^a-z0-9]+", " ", str(value).casefold()).strip()
+    if not normalized:
+        return None
+    return _STATE_MAP_ALIASES.get(normalized, str(value).strip())
+
+
+def india_state_choropleth(
+    sales_by_state_df: pd.DataFrame,
+    metric: str = "sales",
+    theme: Optional[dict] = None,
+) -> go.Figure:
+    """Show state-level sales or quantity on an offline India state map."""
+    theme = theme or _DEFAULT_THEME
+    metric_column = "quantity" if metric == "quantity" else "sales"
+    metric_label = "Quantity" if metric_column == "quantity" else "Sales"
+    geojson = _load_india_state_geojson()
+    geo_state_names = [feature["properties"]["state_name"] for feature in geojson["features"]]
+
+    state_data = sales_by_state_df.copy()
+    if not state_data.empty and metric_column in state_data.columns:
+        state_data["map_state"] = state_data["state"].map(_india_map_state_name)
+        state_data = state_data[state_data["map_state"].notna()]
+        group_columns = [column for column in ("sales", "quantity") if column in state_data.columns]
+        state_data = state_data.groupby("map_state", as_index=False)[group_columns].sum(min_count=1)
+    else:
+        state_data = pd.DataFrame(columns=["map_state", "sales", "quantity"])
+
+    state_lookup = state_data.set_index("map_state").to_dict(orient="index") if not state_data.empty else {}
+    raw_z_values = [state_lookup.get(name, {}).get(metric_column) for name in geo_state_names]
+    z_values = [value if pd.notna(value) else None for value in raw_z_values]
+    customdata = []
+    for name in geo_state_names:
+        values = state_lookup.get(name, {})
+        sales_value = values.get("sales")
+        quantity_value = values.get("quantity")
+        customdata.append([
+            format_inr_short(sales_value) if pd.notna(sales_value) else "No data",
+            f"{quantity_value:,.2f}" if pd.notna(quantity_value) else "Not available",
+        ])
+
+    colorbar = {"title": metric_label, "len": 0.72, "thickness": 14, "outlinewidth": 0}
+    if metric_column == "sales":
+        colorbar.update(tickprefix="₹", tickformat=".2s")
+    else:
+        colorbar.update(tickformat=".2s", ticksuffix=" units")
+
+    fig = go.Figure(
+        go.Choropleth(
+            geojson=geojson,
+            featureidkey="properties.state_name",
+            locations=geo_state_names,
+            z=z_values,
+            customdata=customdata,
+            colorscale="Viridis",
+            zmin=0,
+            zmax=max([float(value) for value in z_values if pd.notna(value)] or [1.0]),
+            marker=dict(line=dict(color=theme["border"], width=0.55)),
+            colorbar=colorbar,
+            hovertemplate=(
+                "<b>%{location}</b><br>Sales: %{customdata[0]}<br>"
+                "Quantity: %{customdata[1]}<extra></extra>"
+            ),
+        )
+    )
+    _apply_common_layout(fig, theme, f"India by {metric_label}", height=600)
+    fig.update_geos(
+        visible=False,
+        bgcolor=theme["bg"],
+        projection_type="mercator",
+        center=dict(lat=23.0, lon=82.5),
+        lataxis_range=[5.0, 39.0],
+        lonaxis_range=[66.0, 100.0],
+    )
+    fig.update_layout(margin=dict(l=0, r=0, t=52, b=0))
+    return fig
 
 
 # ---------------------------------------------------------------------------

@@ -484,13 +484,70 @@ def render_customer_analysis(df: pd.DataFrame) -> None:
 
 def render_geographic_analysis(df: pd.DataFrame) -> None:
     st.markdown("## Geographic Analysis")
-    st.caption("State-level performance, derived from customer GSTIN.")
+    st.caption("State-level performance is derived from customer GSTIN and follows the current dashboard filters.")
+    states = geo.sales_by_state(df)
+    st.markdown("### India Sales Map")
+    map_metrics = ["Sales"]
+    if not states.empty and "quantity" in states.columns and states["quantity"].notna().any():
+        map_metrics.append("Quantity")
+    selected_map_metric = st.selectbox("Color states by", map_metrics, key="geography_map_metric")
+    st.plotly_chart(
+        charts.india_state_choropleth(
+            states,
+            metric="quantity" if selected_map_metric == "Quantity" else "sales",
+            theme=theme,
+        ),
+        use_container_width=True,
+    )
+    st.caption(
+        "Map boundaries: Geological Survey of India data via the "
+        "[National Water Data Portal](https://www.nwdp.nwic.gov.in/hi/dataset/state-boundary). "
+        "Hover over a state to see sales and quantity."
+    )
+    if states.empty:
+        st.info("No usable Indian state GSTINs were found in the current data, so the map has no state sales to color.")
 
-    if not geo.geographic_data_available(df):
-        st.info("Geographic analysis unavailable because GSTIN data was not detected in this file.")
+    st.markdown("### International Sales")
+    international = geo.international_sales_by_country(df)
+    if international.empty:
+        st.info("No international sales were identified from the available country, destination, address, or export fields.")
+        st.caption("Missing GSTIN by itself is not treated as an international sale.")
+    else:
+        quantity_available = "quantity" in international.columns and international["quantity"].notna().any()
+        total_sales = float(international["sales"].sum())
+        total_invoices = int(international["invoices"].sum())
+        metrics = [
+            ("International Sales", format_inr_short(total_sales)),
+            ("Invoices", f"{total_invoices:,}"),
+            ("Destinations", f"{len(international):,}"),
+        ]
+        if quantity_available:
+            quantity_total = float(international["quantity"].sum())
+            quantity_label = f"{quantity_total:,.2f}".rstrip("0").rstrip(".")
+            metrics.append(("Quantity", quantity_label))
+        kpi_row(metrics)
+
+        international_display = international.rename(
+            columns={
+                "country": "Country / Destination",
+                "sales": "Sales",
+                "quantity": "Quantity",
+                "invoices": "Invoices",
+                "customers": "Customers",
+            }
+        ).copy()
+        international_display["Sales"] = international_display["Sales"].apply(format_inr_short)
+        if quantity_available:
+            international_display["Quantity"] = international_display["Quantity"].apply(
+                lambda value: f"{value:,.2f}".rstrip("0").rstrip(".") if pd.notna(value) else "—"
+            )
+        else:
+            international_display = international_display.drop(columns=["Quantity"])
+        st.dataframe(international_display, hide_index=True, use_container_width=True)
+
+    if states.empty:
         return
 
-    states = geo.sales_by_state(df)
     st.markdown("### Sales by State")
     st.plotly_chart(charts.state_sales_chart(states, top_n=len(states), theme=theme), use_container_width=True)
     with st.expander("Full state table"):
@@ -498,6 +555,10 @@ def render_geographic_analysis(df: pd.DataFrame) -> None:
         display_df["sales"] = display_df["sales"].apply(format_inr_short)
         display_df["sales_pct"] = display_df["sales_pct"].apply(lambda v: format_pct(v))
         display_df["avg_invoice_value"] = display_df["avg_invoice_value"].apply(format_inr_short)
+        if display_df["quantity"].notna().any():
+            display_df["quantity"] = display_df["quantity"].apply(
+                lambda value: f"{value:,.2f}".rstrip("0").rstrip(".") if pd.notna(value) else "—"
+            )
         st.dataframe(display_df, hide_index=True, use_container_width=True)
 
     top_state = states.iloc[0]
