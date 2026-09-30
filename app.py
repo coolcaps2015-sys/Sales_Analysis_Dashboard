@@ -175,6 +175,24 @@ def cached_load_and_clean(file_bytes: bytes, file_name: str):
 st.markdown("## Upload Sales Data")
 st.caption("Upload your Excel sales file to generate the dashboard.")
 
+with st.expander("Excel column requirements", expanded=False):
+    st.markdown("**Required to build the dashboard**")
+    st.markdown(
+        "- **Date** — for example: `Date`, `Voucher Date`, `Invoice Date`, or `Sales Date`.\n"
+        "- **Sales amount** — for example: `Value`, `Sales Value`, `Amount`, or `Invoice Value`."
+    )
+    st.caption("Both columns need usable dates and numeric sales amounts.")
+
+    st.markdown("**Optional columns that enable more analysis**")
+    st.markdown(
+        "- **Buyer / customer name** — for example: `Buyer`, `Buyer Name`, `Particulars`, or `Party Name`. "
+        "Enables customer analysis; the Sidebar customer filter specifically uses `Buyer`.\n"
+        "- **GSTIN** — enables geographic analysis.\n"
+        "- **Quantity** — enables quantity and average selling rate analysis.\n"
+        "- **Invoice or voucher number** — enables invoice-level KPIs.\n"
+        "- **Voucher Type** — enables cancellation and FOC detection."
+    )
+
 uploaded_file = st.file_uploader("Excel file (.xlsx)", type=["xlsx"], label_visibility="collapsed")
 
 if uploaded_file is None:
@@ -260,8 +278,18 @@ with st.sidebar:
         "Date range", value=(min_date, max_date), min_value=min_date, max_value=max_date
     )
 
-    customer_options = sorted(full_df["customer"].dropna().unique().tolist()) if "customer" in full_df.columns else []
-    selected_customers = st.multiselect("Customer", customer_options, default=[])
+    buyer_column = next(
+        (column for column in full_df.columns if str(column).strip().casefold() == "buyer"),
+        None,
+    )
+    if buyer_column is not None:
+        buyer_values = full_df[buyer_column].astype("string").str.strip().replace("", pd.NA)
+        customer_options = sorted(buyer_values.dropna().unique().tolist())
+        selected_customers = st.multiselect("Customer (Buyer)", customer_options, default=[])
+    else:
+        buyer_values = None
+        selected_customers = []
+        st.info("No Buyer column found; the customer filter is unavailable for this file.")
 
     voucher_options = sorted(full_df["voucher_type"].dropna().unique().tolist()) if "voucher_type" in full_df.columns else []
     selected_vouchers = st.multiselect("Voucher Type", voucher_options, default=[])
@@ -281,8 +309,14 @@ if isinstance(date_range, tuple) and len(date_range) == 2:
     date_mask = df["date"].between(pd.Timestamp(start_date), pd.Timestamp(end_date)) | df["date"].isna()
     df = df[date_mask]
 
-if selected_customers:
-    df = df[df["customer"].isin(selected_customers) | df["row_type"].ne("Transaction")]
+if selected_customers and buyer_values is not None:
+    # Buyer is only populated on transaction rows in some Tally exports.
+    # Carry each transaction's buyer through its line items so the global
+    # filter keeps only the selected buyer's complete voucher blocks.
+    if "row_type" in full_df.columns:
+        buyer_group = full_df["row_type"].eq("Transaction").cumsum()
+        buyer_values = buyer_values.groupby(buyer_group).ffill()
+    df = df[buyer_values.isin(selected_customers)]
 
 if selected_vouchers:
     df = df[df["voucher_type"].isin(selected_vouchers) | df["row_type"].ne("Transaction")]
